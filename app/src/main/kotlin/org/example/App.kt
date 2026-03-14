@@ -1,5 +1,8 @@
 package org.example
 
+import java.sql.DriverManager
+import java.sql.ResultSet
+
 data class InventoryItem(
     val id: Int,
     val name: String,
@@ -15,32 +18,106 @@ data class InventoryItem(
 }
 
 class InventoryRepository {
-    private val items = ArrayList<InventoryItem>()
-    private var nextId = 1
+    private val url = "jdbc:sqlite:./database/inventory.db"
+
+    init {
+        val conn = connect()
+        conn?.createStatement()?.execute("""
+            CREATE TABLE IF NOT EXISTS items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                category TEXT,
+                quantity INTEGER,
+                spoilage INTEGER,
+                restock_threshold INTEGER,
+                unit_price REAL
+            )
+        """)
+        conn?.close()
+    }
+
+    private fun connect() = DriverManager.getConnection(url)
 
     fun add(item: InventoryItem): InventoryItem {
-        val newItem = item.copy(id = nextId++)
-        items.add(newItem)
-        return newItem
+        val conn = connect()
+        val stmt = conn?.prepareStatement(
+            "INSERT INTO items (name, category, quantity, spoilage, restock_threshold, unit_price) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        stmt?.setString(1, item.name)
+        stmt?.setString(2, item.category)
+        stmt?.setInt(3, item.quantity)
+        stmt?.setInt(4, item.spoilage)
+        stmt?.setInt(5, item.restockThreshold)
+        stmt?.setDouble(6, item.unitPrice)
+        stmt?.executeUpdate()
+
+        val rs = conn?.createStatement()?.executeQuery("SELECT last_insert_rowid()")
+        val newId = rs?.getInt(1) ?: 0
+        conn?.close()
+        return item.copy(id = newId)
     }
 
     fun update(id: Int, updated: InventoryItem): Boolean {
-        val index = items.indexOfFirst { it.id == id }
-        if (index == -1) return false
-        items[index] = updated.copy(id = id)
-        return true
+        val conn = connect()
+        val stmt = conn?.prepareStatement(
+            "UPDATE items SET name=?, category=?, quantity=?, spoilage=?, restock_threshold=?, unit_price=? WHERE id=?"
+        )
+        stmt?.setString(1, updated.name)
+        stmt?.setString(2, updated.category)
+        stmt?.setInt(3, updated.quantity)
+        stmt?.setInt(4, updated.spoilage)
+        stmt?.setInt(5, updated.restockThreshold)
+        stmt?.setDouble(6, updated.unitPrice)
+        stmt?.setInt(7, id)
+        val rows = stmt?.executeUpdate() ?: 0
+        conn?.close()
+        return rows > 0
     }
 
-    fun delete(id: Int): Boolean = items.removeIf { it.id == id }
+    fun delete(id: Int): Boolean {
+        val conn = connect()
+        val stmt = conn?.prepareStatement("DELETE FROM items WHERE id=?")
+        stmt?.setInt(1, id)
+        val rows = stmt?.executeUpdate() ?: 0
+        conn?.close()
+        return rows > 0
+    }
 
-    fun findById(id: Int): InventoryItem? = items.find { it.id == id }
+    fun findById(id: Int): InventoryItem? {
+        val conn = connect()
+        val stmt = conn?.prepareStatement("SELECT * FROM items WHERE id=?")
+        stmt?.setInt(1, id)
+        val rs = stmt?.executeQuery()
+        val item = if (rs?.next() == true) rs.toInventoryItem() else null
+        conn?.close()
+        return item
+    }
 
-    fun getAll(): List<InventoryItem> = items.toList()
+    fun getAll(): List<InventoryItem> {
+        val conn = connect()
+        val rs = conn?.createStatement()?.executeQuery("SELECT * FROM items")
+        val items = mutableListOf<InventoryItem>()
+        while (rs?.next() == true) items.add(rs.toInventoryItem())
+        conn?.close()
+        return items
+    }
 
     fun clear() {
-        items.clear()
-        println("Memory cleared. All records removed from memory.")
+        val conn = connect()
+        conn?.createStatement()?.execute("DELETE FROM items")
+        conn?.close()
+        println("Database cleared. All records removed.")
     }
+
+    private fun ResultSet.toInventoryItem() = InventoryItem(
+        id = getInt("id"),
+        name = getString("name"),
+        category = getString("category"),
+        quantity = getInt("quantity"),
+        spoilage = getInt("spoilage"),
+        restockThreshold = getInt("restock_threshold"),
+        unitPrice = getDouble("unit_price")
+    )
 }
 
 class InventoryService(private val repo: InventoryRepository) {
@@ -120,7 +197,6 @@ class InventoryApp {
     fun run() {
         Runtime.getRuntime().addShutdownHook(Thread {
             println("\nShutting down...")
-            repo.clear()
         })
 
         var running = true
